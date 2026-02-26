@@ -255,9 +255,9 @@ def format_metrics():
 
         lines = []
         lines.append(
-            "# HELP revolut_account_balance Account balance in the specified currency"
+            "# HELP enablebanking_account_balance Account balance in the specified currency"
         )
-        lines.append("# TYPE revolut_account_balance gauge")
+        lines.append("# TYPE enablebanking_account_balance gauge")
 
         for account_key, account_data in state.balances.items():
             bank_name = account_data["bank_name"]
@@ -272,22 +272,22 @@ def format_metrics():
 
                 # Create Prometheus metric with bank info
                 labels = f'bank_name="{bank_name}",bank_country="{bank_country}",account_uid="{account_uid}",currency="{currency}",balance_type="{balance_type}"'
-                lines.append(f"revolut_account_balance{{{labels}}} {amount}")
+                lines.append(f"enablebanking_account_balance{{{labels}}} {amount}")
 
         lines.append("")
         lines.append(
-            "# HELP revolut_scrape_timestamp_seconds Timestamp of last successful scrape"
+            "# HELP enablebanking_scrape_timestamp_seconds Timestamp of last successful scrape"
         )
-        lines.append("# TYPE revolut_scrape_timestamp_seconds gauge")
+        lines.append("# TYPE enablebanking_scrape_timestamp_seconds gauge")
         if state.last_scrape_time:
-            lines.append(f"revolut_scrape_timestamp_seconds {state.last_scrape_time}")
+            lines.append(f"enablebanking_scrape_timestamp_seconds {state.last_scrape_time}")
 
         lines.append("")
         lines.append(
-            "# HELP revolut_scrape_success Whether the last scrape was successful"
+            "# HELP enablebanking_scrape_success Whether the last scrape was successful"
         )
-        lines.append("# TYPE revolut_scrape_success gauge")
-        lines.append(f"revolut_scrape_success {1 if not state.scrape_error else 0}")
+        lines.append("# TYPE enablebanking_scrape_success gauge")
+        lines.append(f"enablebanking_scrape_success {1 if not state.scrape_error else 0}")
 
         return "\n".join(lines) + "\n"
 
