@@ -7,7 +7,9 @@ and exposes them via a /metrics endpoint in Prometheus format.
 """
 
 import json
+import logging
 import os
+import sys
 import threading
 import time
 from datetime import datetime, timezone, timedelta
@@ -20,6 +22,14 @@ import jwt as pyjwt
 import requests
 import yaml
 
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger(__name__)
 
 CONFIG_FILE = "config.yml"
 
@@ -83,7 +93,7 @@ def save_session(bank_name, bank_country, session):
     # Save back to file
     with open(session_file, "w") as f:
         json.dump({"sessions": sessions}, f, indent=2)
-    print(f"Session saved for {bank_name} ({bank_country}) to {session_file}")
+    logger.info(f"Session saved for {bank_name} ({bank_country}) to {session_file}")
 
 
 def create_jwt_token(cfg):
@@ -137,7 +147,7 @@ def get_or_create_session(cfg, jwt_token, bank_name=None, bank_country=None):
         session_data = r.json()
         # Use API response if it has accounts, otherwise fall back to saved session
         session = session_data if "accounts" in session_data else saved_session
-        print(f"Using valid session for {bank_key}")
+        logger.info(f"Using valid session for {bank_key}")
         return session
 
     raise Exception(
@@ -170,11 +180,13 @@ def scrape_balances():
                 session = get_or_create_session(cfg, jwt_token, bank_name, bank_country)
 
                 if not session.get("accounts"):
-                    print(f"No accounts found for {bank_key}")
+                    logger.warning(f"No accounts found for {bank_key}")
                     continue
 
                 for account_uid in session["accounts"]:
-                    print(f"Fetching balance for account {account_uid} ({bank_key})")
+                    logger.debug(
+                        f"Fetching balance for account {account_uid} ({bank_key})"
+                    )
                     r = requests.get(
                         f"{api_origin}/accounts/{account_uid}/balances",
                         headers=base_headers,
@@ -190,15 +202,15 @@ def scrape_balances():
                             "bank_country": bank_country,
                             "account_uid": account_uid,
                         }
-                        print(
-                            f"Retrieved {len(new_balances[account_key]['balances'])} balance(s)"
+                        logger.debug(
+                            f"Retrieved {len(new_balances[account_key]['balances'])} balance(s) for {bank_key}"
                         )
                     else:
-                        print(
+                        logger.error(
                             f"Error fetching balance for {account_uid}: {r.status_code} - {r.text}"
                         )
             except Exception as e:
-                print(f"Error scraping {bank_key}: {str(e)}")
+                logger.error(f"Error scraping {bank_key}: {str(e)}")
                 continue
 
         # Update state
@@ -207,11 +219,10 @@ def scrape_balances():
             state.last_scrape_time = time.time()
             state.scrape_error = None
 
-        print(f"[{datetime.now().isoformat()}] Balance scrape completed successfully")
-
+        logger.info("Balance scrape completed successfully")
     except Exception as e:
         error_msg = f"Error scraping balances: {str(e)}"
-        print(f"[{datetime.now().isoformat()}] {error_msg}")
+        logger.error(error_msg)
         with state.lock:
             state.scrape_error = error_msg
 
@@ -223,7 +234,7 @@ def scrape_loop():
 
     while True:
         scrape_balances()
-        print(
+        logger.info(
             f"Next scrape in {interval_seconds} seconds ({interval_seconds / 3600} hours)"
         )
         time.sleep(interval_seconds)
@@ -374,8 +385,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 self.send_response(302)
                 self.send_header("Location", auth_url)
                 self.end_headers()
-                print(
-                    f"Redirecting to auth URL for {bank['name']} ({bank['country']}): {auth_url}"
+                logger.info(
+                    f"Redirecting to auth URL for {bank['name']} ({bank['country']})"
                 )
 
             except Exception as e:
@@ -447,7 +458,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     "Your session has been created and saved. The server will now scrape balances.",
                     '<p><a href="/metrics">View Metrics</a></p>',
                 )
-                print(
+                logger.info(
                     f"Authentication successful! Session created with {account_count} account(s)"
                 )
 
@@ -475,39 +486,39 @@ def main():
     cfg = load_config()
     port = int(os.environ.get("PORT", cfg["server"]["port"]))
 
-    print(f"EnableBanking Prometheus Exporter starting on port {port}")
-    print(f"Metrics endpoint: http://localhost:{port}/metrics")
-    print(f"Health endpoint: http://localhost:{port}/health")
-    print(f"Auth endpoint: http://localhost:{port}/auth")
-    print(f"Configured banks:")
+    logger.info(f"EnableBanking Prometheus Exporter starting on port {port}")
+    logger.info(f"Metrics endpoint: http://localhost:{port}/metrics")
+    logger.info(f"Health endpoint: http://localhost:{port}/health")
+    logger.info(f"Auth endpoint: http://localhost:{port}/auth")
+    logger.info("Configured banks:")
     for i, bank in enumerate(cfg["banks"]):
-        print(
+        logger.info(
             f"  [{i}] {bank['name']} ({bank['country']}) - Auth at: http://localhost:{port}/auth?bank={i}"
         )
-    print(f"Scrape interval: {cfg['server']['scrape_interval_hours']} hours")
+    logger.info(f"Scrape interval: {cfg['server']['scrape_interval_hours']} hours")
 
     # Start the scraping thread
     scraper_thread = threading.Thread(target=scrape_loop, daemon=True)
     scraper_thread.start()
 
     # Try initial scrape, but don't fail if no session exists yet
-    print("Attempting initial balance scrape...")
+    logger.info("Attempting initial balance scrape...")
     try:
         scrape_balances()
     except Exception as e:
-        print(
+        logger.warning(
             f"Initial scrape failed (this is normal if not authenticated yet): {str(e)}"
         )
-        print(f"Visit http://localhost:{port}/auth to authenticate")
-
-    # Start HTTP server
+        logger.info(
+            f"Visit http://localhost:{port}/auth to authenticate"
+        )  # Start HTTP server
     server = HTTPServer(("0.0.0.0", port), MetricsHandler)
-    print(f"Server ready and listening on 0.0.0.0:{port}")
+    logger.info(f"Server ready and listening on 0.0.0.0:{port}")
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down server...")
+        logger.info("Shutting down server...")
         server.shutdown()
 
 
