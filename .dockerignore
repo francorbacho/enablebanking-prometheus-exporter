@@ -1,0 +1,6 @@
+config.json
+*.pem
+session.json
+data/
+__pycache__/
+*.py[cod]
