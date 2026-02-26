@@ -1,0 +1,19 @@
+# EnableBanking Prometheus Exporter Configuration
+
+api:
+  origin: "https://api.enablebanking.com"
+  application_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"  # Replace with your application ID
+  key_path: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.pem"  # Replace with path to your private key
+
+# Bank Providers (ASPSPs) - You can add multiple banks
+banks:
+  - name: "Nordea"
+    country: "FI"
+
+# Server Configuration
+server:
+  port: 8080
+  scrape_interval_hours: 2  # How often to scrape balances
+
+# Session Storage
+session_file: "session.json"
