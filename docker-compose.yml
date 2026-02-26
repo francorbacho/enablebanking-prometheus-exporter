@@ -6,7 +6,9 @@ services:
       - "8080:8080"
     volumes:
       - ./config.yml:/app/config.yml:ro
-      - ./data:/app/data
+      - ./aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.pem:/app/cert.pem:ro
+      # Data directory for session storage (optional, but recommended for persistence)
+      - ./storage:/app/storage
     environment:
       - PORT=8080
     restart: unless-stopped
