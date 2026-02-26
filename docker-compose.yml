@@ -1,6 +1,6 @@
 services:
   enablebanking-prometheus-exporter:
-    build: .
+    image: ghcr.io/francorbacho/enablebanking-prometheus-exporter:latest
     container_name: enablebanking-prometheus-exporter
     ports:
       - "8080:8080"
