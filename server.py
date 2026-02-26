@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = "config.yml"
+CONFIG_FILES = ["./config.yml", "/app/config.yml"]
 
 # Global configuration and state
 config = None
@@ -56,8 +56,15 @@ def load_config():
     """Load configuration from config.yml"""
     global config
     if config is None:
-        with open(CONFIG_FILE, "r") as f:
-            config = yaml.safe_load(f)
+        for config_file in CONFIG_FILES:
+            if os.path.exists(config_file):
+                logger.info(f"Loading configuration from {config_file}")
+                with open(config_file, "r") as f:
+                    config = yaml.safe_load(f)
+                return config
+        raise FileNotFoundError(
+            f"Configuration file not found. Tried: {', '.join(CONFIG_FILES)}"
+        )
     return config
 
 
