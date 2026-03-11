@@ -162,6 +162,49 @@ def get_or_create_session(cfg, jwt_token, bank_name=None, bank_country=None):
     )
 
 
+def renew_session_if_needed(cfg, jwt_token, bank_name, bank_country, saved_session):
+    """Attempt to renew an expired session"""
+    bank_key = f"{bank_name}_{bank_country}"
+    session_id = saved_session.get("session_id")
+
+    if not session_id:
+        logger.warning(f"No session_id found for {bank_key}")
+        return None
+
+    base_headers = {"Authorization": f"Bearer {jwt_token}"}
+    api_origin = cfg["api"]["origin"]
+
+    try:
+        # Try to extend the session
+        logger.info(f"Attempting to renew session for {bank_key}")
+        extend_body = {
+            "access": {
+                "valid_until": (
+                    datetime.now(timezone.utc) + timedelta(days=10)
+                ).isoformat()
+            }
+        }
+        r = requests.put(
+            f"{api_origin}/sessions/{session_id}",
+            json=extend_body,
+            headers=base_headers,
+        )
+
+        if r.status_code == 200:
+            renewed_session = r.json()
+            save_session(bank_name, bank_country, renewed_session)
+            logger.info(f"Successfully renewed session for {bank_key}")
+            return renewed_session
+        else:
+            logger.warning(
+                f"Failed to renew session for {bank_key}: {r.status_code} - {r.text}"
+            )
+            return None
+    except Exception as e:
+        logger.warning(f"Error renewing session for {bank_key}: {str(e)}")
+        return None
+
+
 def scrape_balances():
     """Scrape account balances from all configured banks"""
     try:
@@ -212,6 +255,45 @@ def scrape_balances():
                         logger.debug(
                             f"Retrieved {len(new_balances[account_key]['balances'])} balance(s) for {bank_key}"
                         )
+                    elif r.status_code == 401:
+                        # Session expired - try to renew it
+                        logger.warning(
+                            f"Session expired for {account_uid} ({bank_key}), attempting renewal..."
+                        )
+                        renewed_session = renew_session_if_needed(
+                            cfg, jwt_token, bank_name, bank_country, saved_session
+                        )
+
+                        if renewed_session:
+                            # Retry with renewed session
+                            logger.info(
+                                f"Retrying balance fetch for {account_uid} with renewed session"
+                            )
+                            r = requests.get(
+                                f"{api_origin}/accounts/{account_uid}/balances",
+                                headers=base_headers,
+                            )
+
+                            if r.status_code == 200:
+                                balances_response = r.json()
+                                account_key = f"{bank_key}:{account_uid}"
+                                new_balances[account_key] = {
+                                    "balances": balances_response.get("balances", []),
+                                    "bank_name": bank_name,
+                                    "bank_country": bank_country,
+                                    "account_uid": account_uid,
+                                }
+                                logger.info(
+                                    f"Successfully fetched balance after renewal for {account_uid}"
+                                )
+                            else:
+                                logger.error(
+                                    f"Still failed after renewal for {account_uid}: {r.status_code} - {r.text}"
+                                )
+                        else:
+                            logger.error(
+                                f"Could not renew session for {bank_key}. Please re-authenticate at /auth"
+                            )
                     else:
                         logger.error(
                             f"Error fetching balance for {account_uid}: {r.status_code} - {r.text}"
@@ -280,14 +362,18 @@ def format_metrics():
         )
         lines.append("# TYPE enablebanking_scrape_timestamp_seconds gauge")
         if state.last_scrape_time:
-            lines.append(f"enablebanking_scrape_timestamp_seconds {state.last_scrape_time}")
+            lines.append(
+                f"enablebanking_scrape_timestamp_seconds {state.last_scrape_time}"
+            )
 
         lines.append("")
         lines.append(
             "# HELP enablebanking_scrape_success Whether the last scrape was successful"
         )
         lines.append("# TYPE enablebanking_scrape_success gauge")
-        lines.append(f"enablebanking_scrape_success {1 if not state.scrape_error else 0}")
+        lines.append(
+            f"enablebanking_scrape_success {1 if not state.scrape_error else 0}"
+        )
 
         return "\n".join(lines) + "\n"
 
