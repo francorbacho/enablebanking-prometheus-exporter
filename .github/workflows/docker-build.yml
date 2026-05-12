@@ -45,6 +45,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
+            type=match,pattern=v(\d+\.\d+)$,group=1
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
