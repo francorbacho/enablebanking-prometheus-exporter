@@ -180,7 +180,7 @@ def renew_session_if_needed(cfg, jwt_token, bank_name, bank_country, saved_sessi
         extend_body = {
             "access": {
                 "valid_until": (
-                    datetime.now(timezone.utc) + timedelta(days=10)
+                    datetime.now(timezone.utc) + timedelta(days=180)
                 ).isoformat()
             }
         }
