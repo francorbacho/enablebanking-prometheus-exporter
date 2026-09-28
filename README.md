@@ -8,7 +8,7 @@ A Prometheus-compatible HTTP metrics server that scrapes bank account balances u
 2. Get your application ID and `*.pem` certificate
 3. Configure your instance (`config.yml`) and start the dockerfile
 4. Visit `http://localhost:8080/auth?bank=N` (where N is the bank index)
-5. Complete the OAuth flow in your browser
+5. Complete the OAuth flow in your browser. The exporter requests up to 180 days of consent; a bank may grant less. Reauthorize when consent expires. The balance scrape interval does not renew consent.
 
 ## Configuration
 
