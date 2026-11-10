@@ -136,6 +136,7 @@ class ApiTests(unittest.TestCase):
         [account] = session["accounts"]
         self.assertEqual(account["account_id"], {"iban": "ES1"})
         self.assertEqual(account["currency"], "EUR")
+        self.assertEqual(account["name"], "Revolut EUR")
         self.assertEqual(account["uid"], server.linked_account_id("Revolut", "ES1", "EUR", "x"))
         self.assertEqual(self.call("GET", f"/sessions/{session['session_id']}"), session)
         with self.assertRaises(server.ApiError):
