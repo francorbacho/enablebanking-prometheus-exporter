@@ -32,6 +32,10 @@ All settings are in `config.yml`:
 - **session_file**: Where to store authentication session
 - **transactions_file**: Where to store transactions (default: `transactions.json` next to `session_file`)
 
+- **api_server** (optional): Serve the Enable Banking API endpoints used by bank sync clients over TLS, from the exporter's own sessions and stored data. Requests must be signed with this application's key. Accounts keep their IDs when a bank is re-authorized.
+  - `port`: HTTPS port
+  - `cert`, `key`: TLS certificate and key
+
 ## Endpoints
 
 - `/`: Configured banks, their consent status and accounts
