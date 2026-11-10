@@ -23,6 +23,7 @@ EXPOSE 8080
 
 # Set environment variable for port
 ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
 
 # Run the server
 CMD ["python", "server.py"]
