@@ -694,7 +694,7 @@ def api_session(cfg, bank_key):
         "accounts": [
             {
                 "uid": account_id,
-                "name": account["name"],
+                "name": f"{account['bank_name']} {account['currency']}".strip(),
                 "currency": account["currency"],
                 "account_id": {"iban": account["iban"]},
                 "account_servicer": {"name": account["bank_name"]},
