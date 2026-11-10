@@ -12,16 +12,18 @@ import io
 import json
 import logging
 import os
+import ssl
 import sys
 import threading
 import time
 from datetime import date, datetime, timezone, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Optional
 import uuid
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlencode, urlparse, parse_qs
 
 import jwt as pyjwt
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 import requests
 import yaml
 
@@ -46,6 +48,7 @@ class AppState:
         self.banks: Dict[str, Dict] = {}
         self.last_scrape_time: Optional[float] = None
         self.last_transactions_time: Optional[float] = None
+        self.link_codes: Dict[str, Dict] = {}
         self.scrape_error: Optional[str] = None
         self.pending_auth_state: Optional[str] = None
         self.pending_bank_index: Optional[int] = (
@@ -231,6 +234,7 @@ def account_info(saved_session):
             info[account["uid"]] = {
                 "name": account.get("name") or account.get("product") or "",
                 "iban": (account.get("account_id") or {}).get("iban") or "",
+                "currency": account.get("currency") or "",
             }
     return info
 
@@ -335,11 +339,18 @@ def scrape_balances(transactions=False):
                     logger.warning(f"No accounts found for {bank_key}")
                     continue
 
+                bank_status["bank_name"] = bank_name
+                bank_status["bank_country"] = bank_country
                 for account in session["accounts"]:
                     account_uid = account["uid"] if isinstance(account, dict) else account
-                    bank_status["accounts"].append(
-                        {"uid": account_uid, **accounts.get(account_uid, {})}
-                    )
+                    details = {
+                        "uid": account_uid,
+                        "name": "",
+                        "iban": "",
+                        "currency": "",
+                        **accounts.get(account_uid, {}),
+                    }
+                    bank_status["accounts"].append(details)
                     logger.debug(
                         f"Fetching balance for account {account_uid} ({bank_key})"
                     )
@@ -358,6 +369,15 @@ def scrape_balances(transactions=False):
                             "bank_country": bank_country,
                             "account_uid": account_uid,
                         }
+                        if not details["currency"]:
+                            details["currency"] = next(
+                                (
+                                    b["balance_amount"].get("currency", "")
+                                    for b in new_balances[account_key]["balances"]
+                                    if b.get("balance_amount")
+                                ),
+                                "",
+                            )
                         logger.debug(
                             f"Retrieved {len(new_balances[account_key]['balances'])} balance(s) for {bank_key}"
                         )
@@ -382,6 +402,10 @@ def scrape_balances(transactions=False):
                             )
                             stored_transactions[account_uid] = {
                                 "bank_name": bank_name,
+                                "bank_country": bank_country,
+                                "name": details["name"],
+                                "iban": details["iban"],
+                                "currency": details["currency"],
                                 "transactions": merge_transactions(stored, fetched, since),
                             }
                         except Exception as e:
@@ -553,6 +577,209 @@ def format_status():
 </table>
 </body></html>
 """
+
+
+class ApiError(Exception):
+    def __init__(self, status, message, error="INVALID_REQUEST"):
+        super().__init__(message)
+        self.status = status
+        self.payload = {"code": status, "message": message, "error": error}
+
+
+def verify_api_token(cfg, authorization):
+    """Accept tokens signed with this application's key, like Enable Banking does"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise ApiError(401, "Missing access token", "UNAUTHORIZED")
+    token = authorization[len("Bearer ") :]
+    with open(cfg["api"]["key_path"], "rb") as f:
+        public_key = load_pem_private_key(f.read(), password=None).public_key()
+    try:
+        if pyjwt.get_unverified_header(token).get("kid") != cfg["api"]["application_id"]:
+            raise ApiError(401, "Unknown application", "UNAUTHORIZED")
+        pyjwt.decode(
+            token, public_key, algorithms=["RS256"], audience="api.enablebanking.com"
+        )
+    except pyjwt.PyJWTError as e:
+        raise ApiError(401, f"Invalid access token: {e}", "UNAUTHORIZED")
+
+
+def linked_account_id(bank_name, iban, currency, uid):
+    """An account ID that stays the same when a bank is re-authorized"""
+    if not iban:
+        return uid
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"enablebanking:{bank_name}:{iban}:{currency}"))
+
+
+def linked_accounts(cfg):
+    """Accounts of authorized banks, with every account UID they had and their latest balances"""
+    with state.lock:
+        banks = dict(state.banks)
+        balances = dict(state.balances)
+    accounts = {}
+    for bank_key, status in banks.items():
+        for account in status["accounts"]:
+            account_id = linked_account_id(
+                status.get("bank_name"), account["iban"], account["currency"], account["uid"]
+            )
+            entry = accounts.setdefault(
+                account_id,
+                {
+                    "bank_key": bank_key,
+                    "bank_name": status.get("bank_name"),
+                    "bank_country": status.get("bank_country"),
+                    "name": account["name"],
+                    "iban": account["iban"],
+                    "currency": account["currency"],
+                    "uids": set(),
+                    "balances": [],
+                },
+            )
+            entry["uids"].add(account["uid"])
+            entry["balances"] = balances.get(f"{bank_key}:{account['uid']}", {}).get(
+                "balances", entry["balances"]
+            )
+    for uid, record in load_transactions(cfg).items():
+        if not record.get("bank_country"):
+            continue
+        account_id = linked_account_id(
+            record.get("bank_name"), record.get("iban"), record.get("currency"), uid
+        )
+        entry = accounts.setdefault(
+            account_id,
+            {
+                "bank_key": f"{record['bank_name']}_{record['bank_country']}",
+                "bank_name": record["bank_name"],
+                "bank_country": record["bank_country"],
+                "name": record.get("name", ""),
+                "iban": record.get("iban", ""),
+                "currency": record.get("currency", ""),
+                "uids": set(),
+                "balances": [],
+            },
+        )
+        entry["uids"].add(uid)
+    return accounts
+
+
+def linked_transactions(cfg, account, date_from, date_to):
+    """Stored transactions of every UID the account had, without duplicates"""
+    stored = load_transactions(cfg)
+    seen = set()
+    transactions = []
+    for uid in sorted(account["uids"]):
+        for t in stored.get(uid, {}).get("transactions", []):
+            day = transaction_date(t)
+            if (date_from and day < date_from) or (date_to and day > date_to):
+                continue
+            key = t.get("entry_reference") or t.get("transaction_id") or json.dumps(
+                t, sort_keys=True
+            )
+            if key not in seen:
+                seen.add(key)
+                transactions.append(t)
+    transactions.sort(key=transaction_date, reverse=True)
+    return transactions
+
+
+def api_session(cfg, bank_key):
+    accounts = linked_accounts(cfg)
+    bank = next(
+        (b for b in cfg["banks"] if f"{b['name']}_{b['country']}" == bank_key), None
+    )
+    if bank is None:
+        raise ApiError(404, "Session not found", "NOT_FOUND")
+    return {
+        "session_id": bank_key,
+        "aspsp": {"name": bank["name"], "country": bank["country"]},
+        "accounts": [
+            {
+                "uid": account_id,
+                "name": account["name"],
+                "currency": account["currency"],
+                "account_id": {"iban": account["iban"]},
+                "account_servicer": {"name": account["bank_name"]},
+            }
+            for account_id, account in accounts.items()
+            if account["bank_key"] == bank_key
+        ],
+    }
+
+
+def handle_api(method, path, query, body, authorization):
+    """Serve the subset of the Enable Banking API that Actual uses, from this exporter's data"""
+    cfg = load_config()
+    verify_api_token(cfg, authorization)
+    parts = [p for p in path.split("/") if p]
+    sessions = load_session()
+
+    if method == "GET" and parts == ["application"]:
+        return {"name": "enablebanking-prometheus-exporter", "kid": cfg["api"]["application_id"], "active": True}
+
+    if method == "GET" and parts == ["aspsps"]:
+        country = query.get("country", [None])[0]
+        return {
+            "aspsps": [
+                {
+                    "name": bank["name"],
+                    "country": bank["country"],
+                    "maximum_consent_validity": 180 * 24 * 3600,
+                    "psu_types": ["personal"],
+                    "beta": False,
+                }
+                for bank in cfg["banks"]
+                if f"{bank['name']}_{bank['country']}" in sessions
+                and (not country or bank["country"] == country)
+            ]
+        }
+
+    if method == "POST" and parts == ["auth"]:
+        aspsp = body.get("aspsp") or {}
+        bank_key = f"{aspsp.get('name')}_{aspsp.get('country')}"
+        if bank_key not in sessions:
+            raise ApiError(422, f"Authorize {aspsp.get('name')} in the exporter first")
+        code = uuid.uuid4().hex
+        with state.lock:
+            now = time.time()
+            state.link_codes = {
+                c: v for c, v in state.link_codes.items() if v["expires"] > now
+            }
+            state.link_codes[code] = {"bank_key": bank_key, "expires": now + 600}
+        redirect_url = body.get("redirect_url", "")
+        separator = "&" if "?" in redirect_url else "?"
+        params = {"code": code, "state": body.get("state", "")}
+        return {
+            "url": f"{redirect_url}{separator}{urlencode(params)}",
+            "authorization_id": code,
+        }
+
+    if method == "POST" and parts == ["sessions"]:
+        with state.lock:
+            link = state.link_codes.pop(body.get("code", ""), None)
+        if not link or link["expires"] < time.time():
+            raise ApiError(400, "Invalid or expired authorization code")
+        return api_session(cfg, link["bank_key"])
+
+    if method == "GET" and len(parts) == 2 and parts[0] == "sessions":
+        return api_session(cfg, parts[1])
+
+    if method == "GET" and len(parts) == 3 and parts[0] == "accounts":
+        account = linked_accounts(cfg).get(parts[1])
+        if account is None:
+            raise ApiError(404, "Account not found", "NOT_FOUND")
+        if parts[2] == "balances":
+            return {"balances": account["balances"]}
+        if parts[2] == "transactions":
+            return {
+                "transactions": linked_transactions(
+                    cfg,
+                    account,
+                    query.get("date_from", [""])[0],
+                    query.get("date_to", [""])[0],
+                ),
+                "continuation_key": None,
+            }
+
+    raise ApiError(404, "Not found", "NOT_FOUND")
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -771,6 +998,43 @@ class MetricsHandler(BaseHTTPRequestHandler):
         )
 
 
+class ApiHandler(BaseHTTPRequestHandler):
+    """Serves the Enable Banking API subset over TLS"""
+
+    def respond(self, method):
+        parsed = urlparse(self.path)
+        try:
+            body = {}
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                body = json.loads(self.rfile.read(length))
+            status, payload = 200, handle_api(
+                method,
+                parsed.path,
+                parse_qs(parsed.query),
+                body,
+                self.headers.get("Authorization"),
+            )
+        except ApiError as e:
+            status, payload = e.status, e.payload
+        except Exception as e:
+            logger.error(f"API error on {method} {parsed.path}: {e}")
+            status, payload = 500, {"code": 500, "message": "Internal error", "error": "INTERNAL"}
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(payload).encode())
+
+    def do_GET(self):
+        self.respond("GET")
+
+    def do_POST(self):
+        self.respond("POST")
+
+    def log_message(self, format, *args):
+        print(f"[{datetime.now().isoformat()}] api {self.address_string()} - {format % args}")
+
+
 def main():
     cfg = load_config()
     port = int(os.environ.get("PORT", cfg["server"]["port"]))
@@ -801,6 +1065,15 @@ def main():
         logger.info(
             f"Visit http://localhost:{port}/auth to authenticate"
         )  # Start HTTP server
+    api_server = cfg.get("api_server")
+    if api_server:
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.load_cert_chain(api_server["cert"], api_server["key"])
+        api = ThreadingHTTPServer(("0.0.0.0", api_server["port"]), ApiHandler)
+        api.socket = tls.wrap_socket(api.socket, server_side=True)
+        threading.Thread(target=api.serve_forever, daemon=True).start()
+        logger.info(f"Enable Banking API listening on 0.0.0.0:{api_server['port']}")
+
     server = HTTPServer(("0.0.0.0", port), MetricsHandler)
     logger.info(f"Server ready and listening on 0.0.0.0:{port}")
 
