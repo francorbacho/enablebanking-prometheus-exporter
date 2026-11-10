@@ -26,8 +26,17 @@ All settings are in `config.yml`:
 - **server**: Server settings
   - `port`: HTTP port (default: 8080)
   - `scrape_interval_hours`: How often to scrape balances
+  - `transactions_interval_hours`: How often to fetch transactions (default: 6)
+  - `transactions_days`: How many days of history to fetch for a new account (default: 90)
 
 - **session_file**: Where to store authentication session
+- **transactions_file**: Where to store transactions (default: `transactions.json` next to `session_file`)
+
+## Endpoints
+
+- `/`: Configured banks, their consent status and accounts
+- `/metrics`: Balances in Prometheus format
+- `/transactions`, `/transactions.csv`: Stored transactions, newest first. Amounts are negative for money going out.
 
 ## Prometheus Configuration
 
